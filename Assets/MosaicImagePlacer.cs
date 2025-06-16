@@ -130,6 +130,12 @@ public class MosaicImagePlacer : MonoBehaviour
     
     [Header("Photo Frame Settings")]
     public bool enablePhotoFrame = true; // Enable photo frame during scattered state
+    public int photosPerRow = 5; // Number of photos to show simultaneously in a row
+    public float photoSpacing = 150f; // Horizontal spacing between photos
+    public GameObject photoFrameContainer; // Container for all photo frames
+    public GameObject photoFramePrefab; // Prefab for individual photo frames
+    [Space(5)]
+    [Header("Legacy Single Frame (Deprecated)")]
     public GameObject photoFrameObject; // The complete photo frame GameObject
     public CanvasGroup photoFrameCanvasGroup; // CanvasGroup for controlling frame visibility
     public MPImage photoFrameImage; // Image component for displaying the photo
@@ -148,6 +154,7 @@ public class MosaicImagePlacer : MonoBehaviour
     [ReadOnly] public bool photoFrameActive = false; // Is photo frame currently active
     [ReadOnly] public bool photoFrameAnimating = false; // Is frame currently animating
     [ReadOnly] public string currentFramePhoto = ""; // Currently displayed photo name
+    [ReadOnly] public List<string> currentFramePhotos = new List<string>(); // Currently displayed photo names (for multiple photos)
     
     [Header("Sequencer Control")]
     public bool enableSequencer = true; // Enable automatic sequencing
@@ -194,6 +201,8 @@ public class MosaicImagePlacer : MonoBehaviour
     private Coroutine photoFrameCoroutine;
     private float lastStatusUpdate = 0f;
     private MosaicConfig currentConfig;
+    private List<GameObject> activePhotoFrames = new List<GameObject>(); // Active photo frame objects
+    private List<RectTransform> activeFrameRects = new List<RectTransform>(); // RectTransforms for animation
     
     // Status update methods
     private void UpdateStatus(string message, bool forceUpdate = false)
@@ -2491,6 +2500,14 @@ public class MosaicImagePlacer : MonoBehaviour
     
     private void StartPhotoFrameEffect()
     {
+        // Check if we have the new multi-frame setup
+        if (photoFrameContainer != null && photoFramePrefab != null)
+        {
+            StartMultiPhotoFrameEffect();
+            return;
+        }
+        
+        // Fallback to legacy single frame setup
         if (!enablePhotoFrame || photoFrameObject == null || photoFrameCanvasGroup == null || photoFrameImage == null || photoFrameRect == null)
         {
             Debug.LogWarning("Photo frame not properly configured - missing references!");
@@ -2511,6 +2528,29 @@ public class MosaicImagePlacer : MonoBehaviour
         // Start the photo frame cycle
         photoFrameCoroutine = StartCoroutine(PhotoFrameCycleEffect());
     }
+
+    private void StartMultiPhotoFrameEffect()
+    {
+        if (!enablePhotoFrame || photoFrameContainer == null || photoFramePrefab == null)
+        {
+            Debug.LogWarning("Multi-photo frame not properly configured - missing references!");
+            return;
+        }
+        
+        if (photoFrameActive) return; // Already running
+        
+        photoFrameActive = true;
+        Debug.Log($"Starting multi-photo frame effect with {photosPerRow} photos per row...");
+        
+        // Initialize container
+        photoFrameContainer.SetActive(true);
+        
+        // Clear any existing frames
+        ClearActivePhotoFrames();
+        
+        // Start the multi-photo frame cycle
+        photoFrameCoroutine = StartCoroutine(MultiPhotoFrameCycleEffect());
+    }
     
     private void StopPhotoFrameEffect(bool fadeOut = true)
     {
@@ -2525,7 +2565,21 @@ public class MosaicImagePlacer : MonoBehaviour
             photoFrameCoroutine = null;
         }
         
-        if (fadeOut && photoFrameCanvasGroup != null)
+        // Handle multi-photo frame cleanup
+        if (photoFrameContainer != null && activePhotoFrames.Count > 0)
+        {
+            if (fadeOut)
+            {
+                StartCoroutine(FadeOutMultiPhotoFrames());
+            }
+            else
+            {
+                ClearActivePhotoFrames();
+                photoFrameContainer.SetActive(false);
+            }
+        }
+        // Handle legacy single frame cleanup
+        else if (fadeOut && photoFrameCanvasGroup != null)
         {
             StartCoroutine(FadeOutPhotoFrame());
         }
@@ -2533,6 +2587,20 @@ public class MosaicImagePlacer : MonoBehaviour
         {
             photoFrameObject.SetActive(false);
         }
+    }
+
+    private void ClearActivePhotoFrames()
+    {
+        foreach (GameObject frame in activePhotoFrames)
+        {
+            if (frame != null)
+            {
+                DestroyImmediate(frame);
+            }
+        }
+        activePhotoFrames.Clear();
+        activeFrameRects.Clear();
+        currentFramePhotos.Clear();
     }
     
     private IEnumerator PhotoFrameCycleEffect()
@@ -2597,7 +2665,250 @@ public class MosaicImagePlacer : MonoBehaviour
         
         Debug.Log("Photo frame cycle ended");
     }
+
+    private IEnumerator MultiPhotoFrameCycleEffect()
+    {
+        while (photoFrameActive && effectsActive && !isInFormation)
+        {
+            // Create 5 photo frames for this cycle
+            yield return StartCoroutine(CreateMultiPhotoFrames());
+            
+            // Slide all frames in simultaneously
+            yield return StartCoroutine(SlideMultiPhotoFramesIn());
+            
+            // Display for specified duration
+            float displayTimer = 0f;
+            while (displayTimer < photoDisplayDuration && photoFrameActive && !isInFormation)
+            {
+                displayTimer += Time.deltaTime;
+                yield return null;
+            }
+            
+            // Check if we should continue (state might have changed)
+            if (!photoFrameActive || isInFormation) break;
+            
+            // Slide all frames out simultaneously
+            yield return StartCoroutine(SlideMultiPhotoFramesOut());
+            
+            // Clean up current frames
+            ClearActivePhotoFrames();
+            
+            // Wait between photo sets
+            float waitTimer = 0f;
+            while (waitTimer < photoWaitDuration && photoFrameActive && !isInFormation)
+            {
+                waitTimer += Time.deltaTime;
+                yield return null;
+            }
+        }
+        
+        // Clean up when cycle ends
+        ClearActivePhotoFrames();
+        if (photoFrameContainer != null)
+        {
+            photoFrameContainer.SetActive(false);
+        }
+        
+        Debug.Log("Multi-photo frame cycle ended");
+    }
     
+    private IEnumerator CreateMultiPhotoFrames()
+    {
+        // Clear any existing frames first
+        ClearActivePhotoFrames();
+        
+        // Get random photo names
+        List<string> photoNames = new List<string>();
+        for (int i = 0; i < photosPerRow; i++)
+        {
+            string randomPhotoName = GetRandomPhotoName();
+            if (randomPhotoName == null)
+            {
+                Debug.LogWarning($"No photos available for frame {i}!");
+                continue;
+            }
+            
+            // Ensure photo is loaded
+            yield return StartCoroutine(EnsureImageLoaded(randomPhotoName));
+            
+            if (loadedSprites.ContainsKey(randomPhotoName))
+            {
+                photoNames.Add(randomPhotoName);
+            }
+        }
+        
+        // Create frames for each photo
+        float totalWidth = (photosPerRow - 1) * photoSpacing;
+        float startX = -totalWidth / 2f;
+        
+        for (int i = 0; i < photoNames.Count; i++)
+        {
+            // Instantiate frame
+            GameObject frame = Instantiate(photoFramePrefab, photoFrameContainer.transform);
+            
+            // Get components
+            MPImage frameImage = frame.GetComponent<MPImage>();
+            RectTransform frameRect = frame.GetComponent<RectTransform>();
+            
+            if (frameImage == null || frameRect == null)
+            {
+                Debug.LogWarning($"Photo frame prefab missing required components! Need MPImage and RectTransform.");
+                Destroy(frame);
+                continue;
+            }
+            
+            // Set photo
+            frameImage.sprite = loadedSprites[photoNames[i]];
+            
+            // Position frame
+            Vector3 targetPosition = new Vector3(startX + (i * photoSpacing), 0, 0);
+            frameRect.localPosition = targetPosition;
+            
+            // Store references
+            activePhotoFrames.Add(frame);
+            activeFrameRects.Add(frameRect);
+            currentFramePhotos.Add(photoNames[i]);
+        }
+        
+        Debug.Log($"Created {activePhotoFrames.Count} photo frames for multi-photo display");
+    }
+
+    private IEnumerator SlideMultiPhotoFramesIn()
+    {
+        if (activeFrameRects.Count == 0) yield break;
+        
+        photoFrameAnimating = true;
+        
+        // Get canvas bounds for positioning
+        Canvas canvas = photoFrameContainer.GetComponentInParent<Canvas>();
+        RectTransform canvasRect = canvas.GetComponent<RectTransform>();
+        float canvasHeight = canvasRect.rect.height;
+        
+        // Store target positions and set start positions
+        Vector3[] targetPositions = new Vector3[activeFrameRects.Count];
+        for (int i = 0; i < activeFrameRects.Count; i++)
+        {
+            targetPositions[i] = activeFrameRects[i].localPosition;
+            Vector3 bottomPosition = new Vector3(targetPositions[i].x, -canvasHeight, targetPositions[i].z);
+            activeFrameRects[i].localPosition = bottomPosition;
+        }
+        
+        // Animate all frames sliding in simultaneously
+        float elapsedTime = 0f;
+        while (elapsedTime < slideInDuration)
+        {
+            float t = elapsedTime / slideInDuration;
+            float curveValue = slideInCurve.Evaluate(t);
+            
+            for (int i = 0; i < activeFrameRects.Count; i++)
+            {
+                Vector3 bottomPosition = new Vector3(targetPositions[i].x, -canvasHeight, targetPositions[i].z);
+                Vector3 currentPos = Vector3.Lerp(bottomPosition, targetPositions[i], curveValue);
+                activeFrameRects[i].localPosition = currentPos;
+            }
+            
+            elapsedTime += Time.deltaTime;
+            yield return null;
+        }
+        
+        // Ensure final positions
+        for (int i = 0; i < activeFrameRects.Count; i++)
+        {
+            activeFrameRects[i].localPosition = targetPositions[i];
+        }
+        
+        photoFrameAnimating = false;
+        Debug.Log($"All {activeFrameRects.Count} photo frames slid in simultaneously");
+    }
+
+    private IEnumerator SlideMultiPhotoFramesOut()
+    {
+        if (activeFrameRects.Count == 0) yield break;
+        
+        photoFrameAnimating = true;
+        
+        // Get canvas bounds for positioning
+        Canvas canvas = photoFrameContainer.GetComponentInParent<Canvas>();
+        RectTransform canvasRect = canvas.GetComponent<RectTransform>();
+        float canvasHeight = canvasRect.rect.height;
+        
+        // Store start positions
+        Vector3[] startPositions = new Vector3[activeFrameRects.Count];
+        for (int i = 0; i < activeFrameRects.Count; i++)
+        {
+            startPositions[i] = activeFrameRects[i].localPosition;
+        }
+        
+        // Animate all frames sliding out simultaneously
+        float elapsedTime = 0f;
+        while (elapsedTime < slideOutDuration)
+        {
+            float t = elapsedTime / slideOutDuration;
+            float curveValue = slideOutCurve.Evaluate(t);
+            
+            for (int i = 0; i < activeFrameRects.Count; i++)
+            {
+                Vector3 topPosition = new Vector3(startPositions[i].x, canvasHeight, startPositions[i].z);
+                Vector3 currentPos = Vector3.Lerp(startPositions[i], topPosition, curveValue);
+                activeFrameRects[i].localPosition = currentPos;
+            }
+            
+            elapsedTime += Time.deltaTime;
+            yield return null;
+        }
+        
+        photoFrameAnimating = false;
+        Debug.Log($"All {activeFrameRects.Count} photo frames slid out simultaneously");
+    }
+
+    private IEnumerator FadeOutMultiPhotoFrames()
+    {
+        if (activePhotoFrames.Count == 0) yield break;
+        
+        // Get all CanvasGroup components
+        List<CanvasGroup> canvasGroups = new List<CanvasGroup>();
+        foreach (GameObject frame in activePhotoFrames)
+        {
+            CanvasGroup canvasGroup = frame.GetComponent<CanvasGroup>();
+            if (canvasGroup != null)
+            {
+                canvasGroups.Add(canvasGroup);
+            }
+        }
+        
+        if (canvasGroups.Count == 0)
+        {
+            // No canvas groups, just deactivate
+            ClearActivePhotoFrames();
+            photoFrameContainer.SetActive(false);
+            yield break;
+        }
+        
+        float elapsedTime = 0f;
+        while (elapsedTime < frameFadeDuration)
+        {
+            float t = elapsedTime / frameFadeDuration;
+            float alpha = Mathf.Lerp(1f, 0f, t);
+            
+            foreach (CanvasGroup canvasGroup in canvasGroups)
+            {
+                canvasGroup.alpha = alpha;
+            }
+            
+            elapsedTime += Time.deltaTime;
+            yield return null;
+        }
+        
+        // Ensure final alpha
+        foreach (CanvasGroup canvasGroup in canvasGroups)
+        {
+            canvasGroup.alpha = 0f;
+        }
+        
+        ClearActivePhotoFrames();
+        photoFrameContainer.SetActive(false);
+    }
+
     private IEnumerator SlidePhotoFrameIn()
     {
         if (photoFrameRect == null) yield break;
