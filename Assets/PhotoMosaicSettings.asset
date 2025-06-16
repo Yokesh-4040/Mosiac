@@ -1,0 +1,29 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: a1e0106fd6a274374b18128919cce8cb, type: 3}
+  m_Name: PhotoMosaicSettings
+  m_EditorClassIdentifier: Assembly-CSharp::PhotoMosaicSettings
+  photoSize: 256
+  logoScale: 5
+  samplingResolution: 50
+  animationDuration: 2
+  mosaicDisplayTime: 10
+  fadeDuration: 2
+  resetInterval: 3
+  showLogoReference: 1
+  scatterRadius: 15
+  floatSpeed: 1
+  floatRange: 2
+  showcaseInterval: 5
+  showcaseDuration: 5
+  showcasePosition: {x: 0, y: 0, z: -3}
+  showcaseEntryPosition: {x: 0, y: -8, z: -3}
