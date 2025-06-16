@@ -1,7 +1,9 @@
 using System.Collections;
 using System.Collections.Generic;
+using System.IO;
 using UnityEngine;
 using UnityEngine.UI;
+using UnityEngine.Networking;
 using Sirenix.OdinInspector;
 using MPUIKIT;
 using TMPro;
@@ -16,7 +18,9 @@ public class MosaicImagePlacer : MonoBehaviour
     public Image logoImage; // Logo Image component for alpha control
     
     [Header("Image Loading")]
-    public string resourcesFolderPath = "Photos"; // Path within Resources folder
+    public bool useSystemFolder = true; // Load from system folder instead of Resources
+    public string systemFolderPath = "Photos"; // Path relative to executable or absolute path
+    public string resourcesFolderPath = "Photos"; // Fallback: Path within Resources folder
     public bool loadOnStart = false;
     public bool shuffleImages = true; // Randomize which image goes where
     public bool useAsyncLoading = true; // Load images on-demand during animation for better performance
@@ -161,7 +165,8 @@ public class MosaicImagePlacer : MonoBehaviour
              "` - Toggle Status Text Visibility", InfoMessageType.Info)]
     public bool enableKeyboardControls = true; // Enable/disable keyboard controls
     
-    private Texture2D[] availableTextures; // Available texture files (loaded instantly, lightweight)
+    private Texture2D[] availableTextures; // Available texture files (loaded instantly, lightweight) - for Resources mode
+    private List<string> availableImagePaths = new List<string>(); // Available image file paths - for system folder mode
     private Dictionary<string, Sprite> loadedSprites = new Dictionary<string, Sprite>(); // Cache of loaded sprites
     private Queue<string> imageNameQueue; // Queue of image names to use
     private List<GameObject> placedImages = new List<GameObject>();
@@ -547,6 +552,81 @@ public class MosaicImagePlacer : MonoBehaviour
     private void DiscoverAvailableImages()
     {
         UpdateStatus("Scanning for employee photos...", true);
+        
+        if (useSystemFolder)
+        {
+            DiscoverSystemFolderImages();
+        }
+        else
+        {
+            DiscoverResourcesImages();
+        }
+    }
+    
+    private void DiscoverSystemFolderImages()
+    {
+        string fullPath = GetSystemFolderPath();
+        Debug.Log($"Discovering available images in system folder: {fullPath}");
+        
+        availableImagePaths.Clear();
+        
+        if (!Directory.Exists(fullPath))
+        {
+            UpdateStatus($"Photo folder not found!\nCreating: {fullPath}", true);
+            Debug.LogWarning($"System folder does not exist: {fullPath}. Creating it...");
+            
+            try
+            {
+                Directory.CreateDirectory(fullPath);
+                UpdateStatus("Photo folder created!\nPlease add images and restart.", true);
+                Debug.Log($"Created directory: {fullPath}");
+            }
+            catch (System.Exception e)
+            {
+                UpdateStatus("Failed to create photo folder!\nCheck permissions.", true);
+                Debug.LogError($"Failed to create directory: {e.Message}");
+            }
+            return;
+        }
+        
+        // Supported image extensions
+        string[] extensions = { ".jpg", ".jpeg", ".png", ".bmp", ".tga" };
+        
+        foreach (string extension in extensions)
+        {
+            string[] files = Directory.GetFiles(fullPath, "*" + extension, SearchOption.TopDirectoryOnly);
+            foreach (string file in files)
+            {
+                availableImagePaths.Add(file);
+            }
+            
+            // Also check uppercase
+            string[] filesUpper = Directory.GetFiles(fullPath, "*" + extension.ToUpper(), SearchOption.TopDirectoryOnly);
+            foreach (string file in filesUpper)
+            {
+                if (!availableImagePaths.Contains(file))
+                {
+                    availableImagePaths.Add(file);
+                }
+            }
+        }
+        
+        if (availableImagePaths.Count == 0)
+        {
+            UpdateStatus($"No photos found in folder!\nAdd images to: {fullPath}", true);
+            Debug.LogError($"No images found in system folder: {fullPath}");
+            return;
+        }
+        
+        totalAvailableImages = availableImagePaths.Count;
+        UpdateStatus($"Found {totalAvailableImages} employee photos!\nPreparing for mosaic creation...", true);
+        Debug.Log($"Found {totalAvailableImages} images in system folder (will load on demand)");
+        isLoaded = true;
+        CreateImageNameQueue();
+    }
+    
+    private void DiscoverResourcesImages()
+    {
         Debug.Log($"Discovering available images in Resources/{resourcesFolderPath}...");
         
         // Load texture references (lightweight - just file names and metadata)
@@ -563,8 +643,33 @@ public class MosaicImagePlacer : MonoBehaviour
         UpdateStatus($"Found {totalAvailableImages} employee photos!\nPreparing for mosaic creation...", true);
         Debug.Log($"Found {totalAvailableImages} available images (not loaded yet - will load on demand)");
         isLoaded = true;
-        // Create image name queue
         CreateImageNameQueue();
+    }
+    
+    private string GetSystemFolderPath()
+    {
+        // If it's an absolute path, use it directly
+        if (Path.IsPathRooted(systemFolderPath))
+        {
+            return systemFolderPath;
+        }
+        
+        // Otherwise, make it relative to the executable
+        string basePath = Application.dataPath;
+        
+        // In builds, Application.dataPath points to the Data folder
+        // We want to go up one level to be next to the executable
+        if (!Application.isEditor)
+        {
+            basePath = Directory.GetParent(Application.dataPath).FullName;
+        }
+        else
+        {
+            // In editor, go up to the project root
+            basePath = Directory.GetParent(Application.dataPath).FullName;
+        }
+        
+        return Path.Combine(basePath, systemFolderPath);
     }
     
     private void CreateImageNameQueue()
@@ -574,10 +679,21 @@ public class MosaicImagePlacer : MonoBehaviour
         imageNameQueue = new Queue<string>();
         List<string> imageNames = new List<string>();
         
-        // Collect all image names
-        foreach (Texture2D texture in availableTextures)
+        if (useSystemFolder)
         {
-            imageNames.Add(texture.name);
+            // Collect all image file paths
+            foreach (string filePath in availableImagePaths)
+            {
+                imageNames.Add(filePath);
+            }
+        }
+        else
+        {
+            // Collect all image names from Resources
+            foreach (Texture2D texture in availableTextures)
+            {
+                imageNames.Add(texture.name);
+            }
         }
         
         // Shuffle if requested
@@ -627,20 +743,31 @@ public class MosaicImagePlacer : MonoBehaviour
         currentlyLoadingImages.Add(imageName);
         currentlyLoading = currentlyLoadingImages.Count;
         
-        // Find the texture
         Texture2D originalTexture = null;
-        foreach (Texture2D texture in availableTextures)
+        
+        if (useSystemFolder)
         {
-            if (texture.name == imageName)
+            // Load from system file
+            yield return StartCoroutine(LoadTextureFromFile(imageName, (result) => {
+                originalTexture = result;
+            }));
+        }
+        else
+        {
+            // Load from Resources
+            foreach (Texture2D texture in availableTextures)
             {
-                originalTexture = texture;
-                break;
+                if (texture.name == imageName)
+                {
+                    originalTexture = texture;
+                    break;
+                }
             }
         }
         
         if (originalTexture == null)
         {
-            Debug.LogError($"Could not find texture: {imageName}");
+            Debug.LogError($"Could not load texture: {imageName}");
             currentlyLoadingImages.Remove(imageName);
             currentlyLoading = currentlyLoadingImages.Count;
             yield break;
@@ -655,27 +782,50 @@ public class MosaicImagePlacer : MonoBehaviour
         if (squareTexture != null)
         {
             // Create sprite
+            string spriteName = useSystemFolder ? Path.GetFileNameWithoutExtension(imageName) : imageName;
             Sprite sprite = Sprite.Create(
                 squareTexture,
                 new Rect(0, 0, squareTexture.width, squareTexture.height),
                 new Vector2(0.5f, 0.5f)
             );
-            sprite.name = imageName;
+            sprite.name = spriteName;
             
             // Add to cache
             loadedSprites[imageName] = sprite;
             loadedImageCount = loadedSprites.Count;
             
             // Update loading progress
+            string displayName = useSystemFolder ? Path.GetFileName(imageName) : imageName;
             UpdateStatusWithProgress("📸 Loading employee photos", loadedImageCount, totalAvailableImages, 
-                $"Processing: {imageName}");
+                $"Processing: {displayName}");
             
-            Debug.Log($"Async loaded: {imageName} ({loadedImageCount}/{totalAvailableImages} total loaded)");
+            Debug.Log($"Async loaded: {displayName} ({loadedImageCount}/{totalAvailableImages} total loaded)");
         }
         
         // Finished loading
         currentlyLoadingImages.Remove(imageName);
         currentlyLoading = currentlyLoadingImages.Count;
+    }
+    
+    private IEnumerator LoadTextureFromFile(string filePath, System.Action<Texture2D> callback)
+    {
+        string url = "file://" + filePath;
+        
+        UnityWebRequest request = UnityWebRequestTexture.GetTexture(url);
+        yield return request.SendWebRequest();
+        
+        if (request.result == UnityWebRequest.Result.Success)
+        {
+            Texture2D texture = DownloadHandlerTexture.GetContent(request);
+            callback(texture);
+        }
+        else
+        {
+            Debug.LogError($"Failed to load texture from file: {filePath}\nError: {request.error}");
+            callback(null);
+        }
+        
+        request.Dispose();
     }
     
     private IEnumerator CreateSquareTextureAsync(Texture2D originalTexture, int targetSize, System.Action<Texture2D> callback)
@@ -2409,11 +2559,22 @@ public class MosaicImagePlacer : MonoBehaviour
     
     private string GetRandomPhotoName()
     {
-        if (availableTextures == null || availableTextures.Length == 0) return null;
-        
-        // Get random texture name
-        int randomIndex = Random.Range(0, availableTextures.Length);
-        return availableTextures[randomIndex].name;
+        if (useSystemFolder)
+        {
+            if (availableImagePaths == null || availableImagePaths.Count == 0) return null;
+            
+            // Get random image file path
+            int randomIndex = Random.Range(0, availableImagePaths.Count);
+            return availableImagePaths[randomIndex];
+        }
+        else
+        {
+            if (availableTextures == null || availableTextures.Length == 0) return null;
+            
+            // Get random texture name
+            int randomIndex = Random.Range(0, availableTextures.Length);
+            return availableTextures[randomIndex].name;
+        }
     }
     
     [Button("Test Photo Frame", ButtonSizes.Small)]
