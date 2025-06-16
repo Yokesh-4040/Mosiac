@@ -8,6 +8,15 @@ using Sirenix.OdinInspector;
 using MPUIKIT;
 using TMPro;
 
+[System.Serializable]
+public class MosaicConfig
+{
+    public string photoFolderPath = "Photos";
+    public bool enableSequencer = true;
+    public float sequencer3DEffectDuration = 10f;
+    public string instructions = "Edit this file to change settings. Restart the application after making changes.";
+}
+
 public class MosaicImagePlacer : MonoBehaviour
 {
     [Header("References")]
@@ -19,8 +28,12 @@ public class MosaicImagePlacer : MonoBehaviour
     
     [Header("Image Loading")]
     public bool useSystemFolder = true; // Load from system folder instead of Resources
-    public string systemFolderPath = "Photos"; // Path relative to executable or absolute path
+    public string systemFolderPath = "Photos"; // Path relative to executable or absolute path (overridden by config file)
     public string resourcesFolderPath = "Photos"; // Fallback: Path within Resources folder
+    [Space(5)]
+    [Header("Config File")]
+    public bool useConfigFile = true; // Load photo path from config file
+    public string configFileName = "MosaicConfig.json"; // Config file name
     public bool loadOnStart = false;
     public bool shuffleImages = true; // Randomize which image goes where
     public bool useAsyncLoading = true; // Load images on-demand during animation for better performance
@@ -180,6 +193,7 @@ public class MosaicImagePlacer : MonoBehaviour
     private Coroutine cyclingCoroutine;
     private Coroutine photoFrameCoroutine;
     private float lastStatusUpdate = 0f;
+    private MosaicConfig currentConfig;
     
     // Status update methods
     private void UpdateStatus(string message, bool forceUpdate = false)
@@ -380,6 +394,9 @@ public class MosaicImagePlacer : MonoBehaviour
             }
         }
         
+        // Load config file first (this may override systemFolderPath)
+        LoadConfigFile();
+        
         // Discover available images (lightweight operation)
         DiscoverAvailableImages();
         
@@ -547,6 +564,125 @@ public class MosaicImagePlacer : MonoBehaviour
         canvasGO.AddComponent<GraphicRaycaster>();
         
         Debug.Log("Created new Canvas for mosaic images");
+    }
+    
+    private void LoadConfigFile()
+    {
+        if (!useConfigFile) return;
+        
+        string configPath = GetConfigFilePath();
+        
+        try
+        {
+            if (File.Exists(configPath))
+            {
+                string jsonContent = File.ReadAllText(configPath);
+                currentConfig = JsonUtility.FromJson<MosaicConfig>(jsonContent);
+                
+                // Apply config settings
+                systemFolderPath = currentConfig.photoFolderPath;
+                enableSequencer = currentConfig.enableSequencer;
+                sequencer3DEffectDuration = currentConfig.sequencer3DEffectDuration;
+                
+                UpdateStatus($"Config loaded!\nPhoto path: {systemFolderPath}", true);
+                Debug.Log($"Config loaded from: {configPath}");
+                Debug.Log($"Photo folder path set to: {systemFolderPath}");
+            }
+            else
+            {
+                CreateDefaultConfig();
+            }
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogError($"Failed to load config file: {e.Message}");
+            CreateDefaultConfig();
+        }
+    }
+    
+    private void CreateDefaultConfig()
+    {
+        currentConfig = new MosaicConfig();
+        currentConfig.photoFolderPath = systemFolderPath;
+        currentConfig.enableSequencer = enableSequencer;
+        currentConfig.sequencer3DEffectDuration = sequencer3DEffectDuration;
+        
+        SaveConfigFile();
+    }
+    
+    private void SaveConfigFile()
+    {
+        if (!useConfigFile) return;
+        
+        string configPath = GetConfigFilePath();
+        
+        try
+        {
+            string jsonContent = JsonUtility.ToJson(currentConfig, true);
+            File.WriteAllText(configPath, jsonContent);
+            
+            UpdateStatus("Config file created!\nEdit to change photo path", true);
+            Debug.Log($"Config saved to: {configPath}");
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogError($"Failed to save config file: {e.Message}");
+        }
+    }
+    
+    private string GetConfigFilePath()
+    {
+        string basePath = Application.dataPath;
+        
+        // In builds, go up one level from Data folder to be next to executable
+        if (!Application.isEditor)
+        {
+            basePath = Directory.GetParent(Application.dataPath).FullName;
+        }
+        else
+        {
+            // In editor, go up to project root
+            basePath = Directory.GetParent(Application.dataPath).FullName;
+        }
+        
+        return Path.Combine(basePath, configFileName);
+    }
+    
+    [Button("Reload Config File", ButtonSizes.Medium)]
+    [GUIColor(0.6f, 1f, 0.6f)]
+    public void ReloadConfigFile()
+    {
+        if (useConfigFile)
+        {
+            LoadConfigFile();
+            if (useSystemFolder)
+            {
+                DiscoverAvailableImages();
+            }
+        }
+        else
+        {
+            Debug.LogWarning("Config file usage is disabled!");
+        }
+    }
+    
+    [Button("Open Config Folder", ButtonSizes.Medium)]
+    [GUIColor(0.6f, 0.8f, 1f)]
+    public void OpenConfigFolder()
+    {
+        string configPath = GetConfigFilePath();
+        string folderPath = Path.GetDirectoryName(configPath);
+        
+        // Open folder in system explorer
+        #if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
+            System.Diagnostics.Process.Start("explorer.exe", folderPath);
+        #elif UNITY_EDITOR_OSX || UNITY_STANDALONE_OSX
+            System.Diagnostics.Process.Start("open", folderPath);
+        #elif UNITY_EDITOR_LINUX || UNITY_STANDALONE_LINUX
+            System.Diagnostics.Process.Start("xdg-open", folderPath);
+        #endif
+        
+        Debug.Log($"Config folder: {folderPath}");
     }
     
     private void DiscoverAvailableImages()
